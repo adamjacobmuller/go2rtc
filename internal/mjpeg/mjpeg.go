@@ -82,10 +82,31 @@ func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Determine if client wants cached snapshot
-	// Priority: query param > global config
+	// Priority: ?cached=false always wins > ?cache=<dur> > ?cached=true > global config
 	allowCached := snapshotServeCachedByDefault
+	var maxAge time.Duration // 0 means no freshness limit (serve any cached)
+	hasMaxAge := false
+
 	if query.Has("cached") {
 		allowCached = query.Get("cached") != "false" && query.Get("cached") != "0"
+	}
+
+	if query.Has("cache") {
+		if d, err := time.ParseDuration(query.Get("cache")); err == nil {
+			if d <= 0 {
+				// ?cache=0s means always fresh
+				allowCached = false
+			} else {
+				allowCached = true
+				maxAge = d
+				hasMaxAge = true
+			}
+		}
+	}
+
+	// ?cached=false always wins as explicit opt-out
+	if query.Get("cached") == "false" || query.Get("cached") == "0" {
+		allowCached = false
 	}
 
 	// Start/reset snapshot cache (if enabled)
@@ -97,24 +118,32 @@ func handlerKeyframe(w http.ResponseWriter, r *http.Request) {
 		if b, timestamp, exists := stream.GetCachedSnapshot(); exists {
 			age := time.Since(timestamp)
 
-			log.Trace().
-				Dur("age_ms", age).
-				Int("size", len(b)).
-				Msg("[mjpeg] serving cached snapshot")
+			// If freshness limit set, check if cache is too old
+			if hasMaxAge && age > maxAge {
+				log.Trace().
+					Dur("age_ms", age).
+					Dur("max_age_ms", maxAge).
+					Msg("[mjpeg] cached snapshot too old, fetching fresh")
+			} else {
+				log.Trace().
+					Dur("age_ms", age).
+					Int("size", len(b)).
+					Msg("[mjpeg] serving cached snapshot")
 
-			w.Header().Set("Content-Type", "image/jpeg")
-			w.Header().Set("Content-Length", strconv.Itoa(len(b)))
-			w.Header().Set("X-Snapshot-Age-Ms", strconv.Itoa(int(age.Milliseconds())))
-			w.Header().Set("X-Snapshot-Timestamp", timestamp.Format(time.RFC3339Nano))
-			w.Header().Set("X-Snapshot-Cached", "true")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Connection", "close")
-			w.Header().Set("Pragma", "no-cache")
+				w.Header().Set("Content-Type", "image/jpeg")
+				w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+				w.Header().Set("X-Snapshot-Age-Ms", strconv.Itoa(int(age.Milliseconds())))
+				w.Header().Set("X-Snapshot-Timestamp", timestamp.Format(time.RFC3339Nano))
+				w.Header().Set("X-Snapshot-Cached", "true")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "close")
+				w.Header().Set("Pragma", "no-cache")
 
-			if _, err := w.Write(b); err != nil {
-				log.Error().Err(err).Caller().Send()
+				if _, err := w.Write(b); err != nil {
+					log.Error().Err(err).Caller().Send()
+				}
+				return
 			}
-			return
 		}
 	}
 

@@ -1,0 +1,31 @@
+name: Rebase onto upstream master
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6 AM UTC
+  workflow_dispatch:
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout cached-snapshots
+        uses: actions/checkout@v4
+        with:
+          ref: cached-snapshots
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and rebase
+        run: |
+          git remote add upstream https://github.com/AlexxIT/go2rtc.git
+          git fetch upstream master
+          git rebase upstream/master
+
+      - name: Force push
+        run: git push --force-with-lease origin cached-snapshots
